@@ -154,6 +154,32 @@ class data_batch : public std::enable_shared_from_this<data_batch> {
   size_t get_read_only_count() const { return _read_only_count.load(std::memory_order_acquire); }
 
   /**
+   * @brief Stored size of the data as of the last time a representation was installed.
+   *
+   * Atomic, lock-free. For a caller that must size the batch without waiting on a conversion
+   * that holds it exclusively. While a conversion is in flight this is the size of the source
+   * representation; under a read-only or mutable accessor, read the representation instead.
+   *
+   * @return idata_representation::get_size_in_bytes() of that representation.
+   */
+  size_t get_last_known_size_in_bytes() const
+  {
+    return _last_known_size.load(std::memory_order_relaxed);
+  }
+
+  /**
+   * @brief Uncompressed size of the data as of the last time a representation was installed.
+   *
+   * Atomic, lock-free. See get_last_known_size_in_bytes().
+   *
+   * @return idata_representation::get_uncompressed_data_size_in_bytes() of that representation.
+   */
+  size_t get_last_known_uncompressed_size_in_bytes() const
+  {
+    return _last_known_uncompressed_size.load(std::memory_order_relaxed);
+  }
+
+  /**
    * @brief Transition from read-only back to idle (release shared lock).
    *
    * @param accessor Rvalue reference to the read-only accessor (consumed).
@@ -248,6 +274,12 @@ class data_batch : public std::enable_shared_from_this<data_batch> {
    */
   void set_data(std::unique_ptr<idata_representation> data);
 
+  /**
+   * @brief Publish the sizes of the held representation for the lock-free size getters.
+   * @warning Call after every assignment to _data, while no other thread can replace it.
+   */
+  void record_data_sizes();
+
   struct reader_event_pool {
     // Events are stored as a pending prefix followed by reusable completed events. This bounds
     // event creation by the peak number of overlapping reads registered on this CUDA device.
@@ -311,6 +343,10 @@ class data_batch : public std::enable_shared_from_this<data_batch> {
   mutable std::atomic<batch_state> _state{batch_state::idle};  ///< Observable lock state
   mutable std::atomic<size_t> _read_only_count{
     0};  ///< Count of active read_only_data_batch instances
+
+  // Sizes of _data as of its last installation, for the lock-free size getters.
+  std::atomic<size_t> _last_known_size{0};
+  std::atomic<size_t> _last_known_uncompressed_size{0};
 
   // CUDA events are device-associated, so each device needs an independent reusable pool.
   // mutable is for read_only case which holds `const data_batch`, but is OK because this
@@ -684,6 +720,7 @@ class mutable_data_batch {
   {
     auto old_representation = std::move(_batch->_data);
     _batch->_data           = std::move(new_representation);
+    _batch->record_data_sizes();
 
     bool needs_sync = old_representation != nullptr &&
                       (old_representation->get_current_tier() == memory::Tier::GPU ||
