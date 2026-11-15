@@ -124,6 +124,24 @@ class idisk_io_backend {
   }
 
   /**
+   * @brief Write multiple host memory buffers to a disk file in a single batch.
+   *
+   * Lets a backend open the file once for all entries instead of once per buffer.
+   *
+   * Default implementation falls back to sequential host write calls.
+   *
+   * @param path File path to write to.
+   * @param entries Vector of I/O batch entries (host pointers, sizes, file offsets).
+   */
+  virtual void write_host_batch(const std::filesystem::path& path,
+                                const std::vector<io_batch_entry>& entries)
+  {
+    for (const auto& entry : entries) {
+      write(path, entry.ptr, entry.size, entry.file_offset);
+    }
+  }
+
+  /**
    * @brief Read multiple buffers from a disk file into device memory in a single batch.
    *
    * @param path File path to read from.

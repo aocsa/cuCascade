@@ -378,6 +378,32 @@ class pipeline_io_backend : public idisk_io_backend {
     }
   }
 
+  /**
+   * @brief Batch host write: single file open for all entries, one pwrite per entry.
+   *
+   * Same flags and file contents as write(host) called once per entry.
+   */
+  void write_host_batch(const std::filesystem::path& path,
+                        const std::vector<io_batch_entry>& entries) override
+  {
+    if (entries.empty()) return;
+    int fd = ::open(path.c_str(), O_CREAT | O_WRONLY, 0644);
+    if (fd < 0) {
+      CUCASCADE_FAIL("pipeline write(host): open failed: " + std::string(std::strerror(errno)));
+    }
+    bool complete = true;
+    for (const auto& entry : entries) {
+      if (entry.size == 0) continue;
+      auto written = ::pwrite(fd, entry.ptr, entry.size, static_cast<off_t>(entry.file_offset));
+      if (written < 0 || static_cast<std::size_t>(written) != entry.size) {
+        complete = false;
+        break;
+      }
+    }
+    ::close(fd);
+    if (!complete) { CUCASCADE_FAIL("pipeline write(host): pwrite short"); }
+  }
+
   void read(const std::filesystem::path& path,
             void* host_ptr,
             std::size_t size,
