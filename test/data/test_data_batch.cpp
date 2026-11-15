@@ -376,6 +376,21 @@ TEST_CASE("data_batch set_data via mutable accessor", "[data_batch]")
   REQUIRE(ro.get_current_tier() == memory::Tier::HOST);
 }
 
+TEST_CASE("data_batch last known sizes are readable while the mutable lock is held",
+          "[data_batch]")
+{
+  auto data  = std::make_unique<mock_data_representation>(memory::Tier::GPU, 1024);
+  auto batch = data_batch::make(1, std::move(data));
+  REQUIRE(batch->get_last_known_size_in_bytes() == 1024);
+  REQUIRE(batch->get_last_known_uncompressed_size_in_bytes() == 1024);
+
+  auto rw = batch->to_mutable();
+  REQUIRE(batch->get_last_known_uncompressed_size_in_bytes() == 1024);
+  rw.set_data(std::make_unique<mock_data_representation>(memory::Tier::HOST, 2048));
+  REQUIRE(batch->get_last_known_size_in_bytes() == 2048);
+  REQUIRE(batch->get_last_known_uncompressed_size_in_bytes() == 2048);
+}
+
 // =============================================================================
 // Accessor delegation tests (TEST-01)
 // =============================================================================
