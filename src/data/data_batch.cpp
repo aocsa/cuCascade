@@ -85,6 +85,7 @@ data_batch::data_batch(uint64_t batch_id,
                        std::unique_ptr<idata_batch_probe> probe)
   : _batch_id(batch_id), _data(std::move(data)), _probe(std::move(probe))
 {
+  record_data_sizes();
   _probe->created(get_batch_id(), *get_data());
 }
 
@@ -135,7 +136,16 @@ void data_batch::set_data(std::unique_ptr<idata_representation> data)
 {
   if (data == nullptr) { throw std::runtime_error("data is null in data_batch::set_data"); }
   _data = std::move(data);
+  record_data_sizes();
   _probe->data_replaced(*_data);
+}
+
+void data_batch::record_data_sizes()
+{
+  if (_data == nullptr) { return; }
+  _last_known_size.store(_data->get_size_in_bytes(), std::memory_order_relaxed);
+  _last_known_uncompressed_size.store(_data->get_uncompressed_data_size_in_bytes(),
+                                      std::memory_order_relaxed);
 }
 
 void data_batch::reader_event_pool_map::recycle_completed_reader_events(
