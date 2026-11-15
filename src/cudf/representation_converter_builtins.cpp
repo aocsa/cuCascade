@@ -1324,15 +1324,15 @@ struct disk_file_guard {
 };
 
 /**
- * @brief Write data from a host block allocation to a disk file, handling block-boundary spanning.
+ * @brief Append one write per host block of a buffer to @p entries, handling block-boundary
+ * spanning.
  */
-static void write_host_buffer_to_disk(
+static void append_host_buffer_writes(
   const memory::fixed_size_host_memory_resource::multiple_blocks_allocation& alloc,
   std::size_t alloc_offset,
   std::size_t size,
-  const std::filesystem::path& file_path,
   std::size_t file_offset,
-  idisk_io_backend& backend)
+  std::vector<io_batch_entry>& entries)
 {
   const std::size_t block_size = alloc.block_size();
   std::size_t block_idx        = alloc_offset / block_size;
@@ -1343,7 +1343,7 @@ static void write_host_buffer_to_disk(
     std::size_t avail     = block_size - block_off;
     std::size_t chunk     = std::min(remaining, avail);
     auto block            = alloc.at(block_idx);
-    backend.write(file_path, block.data() + block_off, chunk, file_offset + written);
+    entries.push_back({block.data() + block_off, chunk, file_offset + written});
     written += chunk;
     block_off += chunk;
     if (block_off == block_size) {
@@ -1426,29 +1426,28 @@ static memory::column_metadata recompute_file_offsets(const memory::column_metad
 }
 
 /**
- * @brief Recursively write column buffers from host blocks to disk at computed file offsets.
+ * @brief Recursively append the writes of column buffers from host blocks to disk at computed
+ * file offsets.
  */
-static void write_column_buffers(
+static void append_column_buffer_writes(
   const memory::column_metadata& src_meta,
   const memory::column_metadata& disk_meta,
   const memory::fixed_size_host_memory_resource::multiple_blocks_allocation& alloc,
-  const std::filesystem::path& file_path,
-  idisk_io_backend& backend)
+  std::vector<io_batch_entry>& entries)
 {
   if (src_meta.has_null_mask && src_meta.null_mask_size > 0) {
-    write_host_buffer_to_disk(alloc,
+    append_host_buffer_writes(alloc,
                               src_meta.null_mask_offset,
                               src_meta.null_mask_size,
-                              file_path,
                               disk_meta.null_mask_offset,
-                              backend);
+                              entries);
   }
   if (src_meta.has_data && src_meta.data_size > 0) {
-    write_host_buffer_to_disk(
-      alloc, src_meta.data_offset, src_meta.data_size, file_path, disk_meta.data_offset, backend);
+    append_host_buffer_writes(
+      alloc, src_meta.data_offset, src_meta.data_size, disk_meta.data_offset, entries);
   }
   for (std::size_t i = 0; i < src_meta.children.size(); ++i) {
-    write_column_buffers(src_meta.children[i], disk_meta.children[i], alloc, file_path, backend);
+    append_column_buffer_writes(src_meta.children[i], disk_meta.children[i], alloc, entries);
   }
 }
 
@@ -1553,11 +1552,13 @@ static std::unique_ptr<idata_representation> convert_host_data_to_disk(
   }
   std::size_t total_file_data_size = cursor;
 
-  // Write column data buffers
+  // Write column data buffers, through one open of the file
+  std::vector<io_batch_entry> entries;
   for (std::size_t i = 0; i < host_table->columns.size(); ++i) {
-    write_column_buffers(
-      host_table->columns[i], disk_columns[i], *host_table->allocation, file_path, backend);
+    append_column_buffer_writes(
+      host_table->columns[i], disk_columns[i], *host_table->allocation, entries);
   }
+  backend.write_host_batch(file_path, entries);
 
   guard.release();
 

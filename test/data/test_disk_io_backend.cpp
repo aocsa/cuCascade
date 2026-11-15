@@ -73,6 +73,46 @@ TEST_CASE("pipeline backend host write and read round-trip", "[disk][io][pipelin
   std::filesystem::remove(file_path);
 }
 
+TEST_CASE("pipeline backend host batch write matches per-buffer writes", "[disk][io][pipeline]")
+{
+  io_backend_registry registry;
+  register_builtin_io_backends(registry);
+  auto backend = registry.create_backend("pipeline");
+
+  auto tmp_dir     = std::filesystem::temp_directory_path();
+  auto batch_path  = tmp_dir / "test_pipeline_host_batch.bin";
+  auto single_path = tmp_dir / "test_pipeline_host_single.bin";
+  std::filesystem::remove(batch_path);
+  std::filesystem::remove(single_path);
+
+  std::vector<uint8_t> first(4096);
+  std::iota(first.begin(), first.end(), static_cast<uint8_t>(0));
+  std::vector<uint8_t> second(1000, 0x5a);
+
+  // The second buffer starts on the next 4KB boundary after a gap, as a column buffer does.
+  std::vector<io_batch_entry> entries{{first.data(), first.size(), 0},
+                                      {second.data(), second.size(), 8192}};
+  backend->write_host_batch(batch_path, entries);
+  for (const auto& entry : entries) {
+    backend->write(single_path, entry.ptr, entry.size, entry.file_offset);
+  }
+
+  REQUIRE(std::filesystem::file_size(batch_path) == 8192 + second.size());
+  REQUIRE(std::filesystem::file_size(single_path) == std::filesystem::file_size(batch_path));
+  std::vector<uint8_t> batch_bytes(8192 + second.size(), 0xff);
+  std::vector<uint8_t> single_bytes(batch_bytes.size(), 0xee);
+  backend->read(batch_path, batch_bytes.data(), batch_bytes.size(), 0);
+  backend->read(single_path, single_bytes.data(), single_bytes.size(), 0);
+  REQUIRE(batch_bytes == single_bytes);
+
+  std::filesystem::remove(batch_path);
+  std::filesystem::remove(single_path);
+
+  // No file for an empty batch, as with zero-sized writes.
+  backend->write_host_batch(batch_path, {});
+  REQUIRE_FALSE(std::filesystem::exists(batch_path));
+}
+
 // =============================================================================
 // Disk File Path Generation Tests
 // =============================================================================
